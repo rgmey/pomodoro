@@ -9,6 +9,22 @@ Most pomodoro trackers assume the Gregorian calendar and want you to open an
 app. This is a single Python file that logs `start`/`end` events straight to
 a CSV, dates in Jalali, runnable from any terminal.
 
+## Calendar
+
+Defaults to the Persian (Jalali) calendar. To use the Gregorian calendar
+instead, set an environment variable before running:
+
+```bash
+export POMODORO_CALENDAR=gregorian   # Linux/macOS, add to your shell profile
+```
+
+```bat
+setx POMODORO_CALENDAR gregorian     :: Windows, open a new terminal after
+```
+
+Don't switch calendars on a CSV that already has data logged in the other
+one — pick one calendar per file.
+
 ## Data model
 
 Each pomodoro session is **one row** in `df_pomodoro.csv`:
@@ -108,6 +124,10 @@ lines from `.gitignore`.
 ## Requirements
 
 - Python 3.8+
-- `pandas`, `jdatetime`, `shortuuid`
+- `pandas`, `shortuuid`
+- `jdatetime` (only needed if using the default Jalali calendar; not required
+  if `POMODORO_CALENDAR=gregorian`)
 
+## License
 
+MIT — do whatever you want with it.

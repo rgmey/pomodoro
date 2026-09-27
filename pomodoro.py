@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Pomodoro CLI tracker — Persian (Jalali) calendar, one row per session.
+Pomodoro CLI tracker — one row per session, Jalali or Gregorian calendar.
 
 Install once:
-    pip install pandas jdatetime shortuuid
+    pip install pandas shortuuid
+    pip install jdatetime   # only needed if you use the Jalali calendar (default)
 
 Typical use:
     python pomodoro.py start mlflow
@@ -12,14 +13,24 @@ Typical use:
     python pomodoro.py list
     python pomodoro.py agg
 
+Calendar
+--------
+Defaults to the Persian (Jalali) calendar. To use the Gregorian calendar
+instead, set an environment variable before running the tool:
+    export POMODORO_CALENDAR=gregorian     # Linux/macOS
+    setx POMODORO_CALENDAR gregorian       # Windows (new terminal needed after)
+Put that in the same shell profile as your 'pomo' alias so it always applies.
+Don't switch calendars on a CSV that already has data in the other one —
+dates would no longer sort or compare correctly. Pick one calendar per file.
+
 Data model
 ----------
 Each pomodoro session is ONE row:
     uuid, date, weekday, task, start_hour, start_minute, end_hour, end_minute, mins
 'start' appends a row with end_hour/end_minute/mins left blank.
 'end' fills those three fields in on the same row (the last row still
-missing 'mins'). A session is attributed to the Jalali day it *started* on,
-even if it happens to run past midnight.
+missing 'mins'). A session is attributed to the day it *started* on, even
+if it happens to run past midnight.
 
 If you point this script at a CSV still in the old two-row
 (start/end + 'state' column) format, it is auto-migrated the first time you
@@ -39,15 +50,50 @@ Then: pomo start coding / pomo end / pomo status
 """
 import argparse
 import os
+from datetime import datetime as gdt
 from datetime import timedelta
 from pathlib import Path
 from warnings import filterwarnings
 
 import pandas as pd
 import shortuuid
-from jdatetime import datetime as jdt
 
 filterwarnings('ignore')
+
+# --------------------------------------------------------------------------
+# Calendar backend — Jalali (default) or Gregorian
+# --------------------------------------------------------------------------
+
+CALENDAR = os.environ.get('POMODORO_CALENDAR', 'jalali').strip().lower()
+if CALENDAR not in ('jalali', 'gregorian'):
+    raise SystemExit(
+        f"POMODORO_CALENDAR must be 'jalali' or 'gregorian', got '{CALENDAR}'")
+
+if CALENDAR == 'jalali':
+    from jdatetime import datetime as jdt
+
+WEEKDAYS_JALALI = {0: 'Saturday', 1: 'Sunday', 2: 'Monday', 3: 'Tuesday',
+                   4: 'Wednesday', 5: 'Thursday', 6: 'Friday'}
+
+
+def now():
+    """Current datetime in whichever calendar is active."""
+    return jdt.now() if CALENDAR == 'jalali' else gdt.now()
+
+
+def make_dt(year, month, day, hour=0, minute=0):
+    """Build a datetime in whichever calendar is active."""
+    if CALENDAR == 'jalali':
+        return jdt(year, month, day, hour, minute)
+    return gdt(year, month, day, hour, minute)
+
+
+def weekday_name(d):
+    """English weekday name for a datetime, in whichever calendar is active."""
+    if CALENDAR == 'jalali':
+        return WEEKDAYS_JALALI[d.weekday()]
+    return d.strftime('%A')
+
 
 DATA_DIR = Path(os.environ.get('POMODORO_DIR', Path(__file__).resolve().parent))
 CSV_PATH = DATA_DIR / 'df_pomodoro.csv'
@@ -57,9 +103,6 @@ LEGACY_BACKUP_PATH = DATA_DIR / 'df_pomodoro_legacy_backup.csv'
 
 COLUMNS = ['uuid', 'date', 'weekday', 'task',
            'start_hour', 'start_minute', 'end_hour', 'end_minute', 'mins']
-
-WEEKDAYS = {0: 'Saturday', 1: 'Sunday', 2: 'Monday', 3: 'Tuesday',
-            4: 'Wednesday', 5: 'Thursday', 6: 'Friday'}
 
 
 # --------------------------------------------------------------------------
@@ -128,10 +171,12 @@ def get_open_task(df):
     return None, None
 
 
-def jalali_start_dt(row):
+def session_start_dt(row):
+    """Rebuild the session's start datetime from its date/start_hour/start_minute
+    columns, in whichever calendar is currently active."""
     date_int = int(row.date)
     year, month, day = date_int // 10000, (date_int // 100) % 100, date_int % 100
-    return jdt(year, month, day, int(row.start_hour), int(row.start_minute))
+    return make_dt(year, month, day, int(row.start_hour), int(row.start_minute))
 
 
 # --------------------------------------------------------------------------
@@ -147,14 +192,14 @@ def cmd_start(args):
               f"Run 'end' to finish it, or 'cancel' to discard it.")
         return
 
-    now = jdt.now()
+    n = now()
     row = {
         'uuid': shortuuid.ShortUUID().random(length=10),
-        'date': int(now.date().strftime('%Y%m%d')),
-        'weekday': WEEKDAYS[now.weekday()],
+        'date': int(n.strftime('%Y%m%d')),
+        'weekday': weekday_name(n),
         'task': args.task,
-        'start_hour': int(now.strftime('%H')),
-        'start_minute': int(now.strftime('%M')),
+        'start_hour': int(n.strftime('%H')),
+        'start_minute': int(n.strftime('%M')),
         'end_hour': None,
         'end_minute': None,
         'mins': None,
@@ -172,12 +217,12 @@ def cmd_end(args):
         print("No running task to end. Start one first with: start <task>")
         return
 
-    start_dt = jalali_start_dt(open_task)
-    now = jdt.now()
-    elapsed_min = (now - start_dt).total_seconds() / 60
+    start_dt = session_start_dt(open_task)
+    n = now()
+    elapsed_min = (n - start_dt).total_seconds() / 60
 
-    df.loc[idx, 'end_hour'] = int(now.strftime('%H'))
-    df.loc[idx, 'end_minute'] = int(now.strftime('%M'))
+    df.loc[idx, 'end_hour'] = int(n.strftime('%H'))
+    df.loc[idx, 'end_minute'] = int(n.strftime('%M'))
     df.loc[idx, 'mins'] = round(elapsed_min)
     save_df(df)
     pomodoro_agg()
@@ -195,8 +240,8 @@ def cmd_status(args):
     if open_task is None:
         print("No task currently running.")
         return
-    start_dt = jalali_start_dt(open_task)
-    elapsed_min = (jdt.now() - start_dt).total_seconds() / 60
+    start_dt = session_start_dt(open_task)
+    elapsed_min = (now() - start_dt).total_seconds() / 60
     h, m = divmod(int(elapsed_min), 60)
     duration = f"{h}h {m}m" if h else f"{m}m"
     print(f"'{open_task.task}' running for {duration} "
@@ -223,12 +268,12 @@ def cmd_fix_end(args):
         print("No open task to fix.")
         return
 
-    start_dt = jalali_start_dt(open_task)
+    start_dt = session_start_dt(open_task)
 
     if args.hour is not None and args.minute is not None:
         date_int = int(open_task.date)
         year, month, day = date_int // 10000, (date_int // 100) % 100, date_int % 100
-        end_dt = jdt(year, month, day, args.hour, args.minute)
+        end_dt = make_dt(year, month, day, args.hour, args.minute)
         if end_dt < start_dt:  # crossed midnight
             end_dt = end_dt + timedelta(days=1)
         mins = round((end_dt - start_dt).total_seconds() / 60)
@@ -309,7 +354,7 @@ def cmd_remove(args):
 def build_parser():
     p = argparse.ArgumentParser(
         prog='pomodoro',
-        description="Pomodoro CLI tracker (Jalali/Persian calendar dates).")
+        description=f"Pomodoro CLI tracker (calendar: {CALENDAR}).")
     sub = p.add_subparsers(dest='command', required=True)
 
     sp = sub.add_parser('start', help='Start a new task')
